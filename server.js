@@ -594,7 +594,7 @@ async function router(req,res){
 }
 
 const server=http.createServer((req,res)=>{router(req,res).catch(e=>{
-  console.error('Request failed:',e instanceof AppError?e.status:500);
+  console.error('Request failed:', err.status, err.code, err.message, e?.message || e);
   if(!res.headersSent)send(res,e instanceof AppError?e.status:500,layout('Unable to complete request',`<div class="card"><h1>Unable to complete request</h1><p>${esc(e instanceof AppError?e.message:'Please try again or contact the artist.')}</p></div>`));else res.end();
 });});
 if(require.main===module){
