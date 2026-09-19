@@ -320,6 +320,12 @@ async function router(req,res){
     return redirect(res,await storage.signed(p.slice('/uploads/'.length)));
   }
 
+  if(req.method==='GET' && /^\/r\/[a-f0-9]+\/status$/.test(p)){
+    const r=await requestByToken(p.split('/')[2]);
+    if(!r)return send(res,404,JSON.stringify({error:'Project not found.'}),'application/json');
+    return send(res,200,JSON.stringify({status:r.status}),'application/json');
+  }
+
   if(req.method==='GET' && /^\/r\/[a-f0-9]+$/.test(p)){
     const token=p.split('/')[2], r=await requestByToken(token); if(!r) return send(res,404,layout('Not found','<div class="card">Request not found.</div>'));
     const slots=await repo.slots(r.id), chosen=slots.find(s=>s.selected);
@@ -337,7 +343,7 @@ async function router(req,res){
     }
     if(r.status==='pending_deposit'){
       const pending=appts.find(a=>a.status==='pending_payment');
-      const stripeButton = STRIPE_SECRET_KEY && pending
+      const stripeButton = STRIPE_SECRET_KEY && STRIPE_WEBHOOK_SECRET && pending
         ? `<form method="post" action="/r/${token}/pay"><button class="primary">Pay ${money(pending.deposit_due_cents)} deposit securely</button></form>`
         : pending && ALLOW_SIMULATED_PAYMENTS
           ? `<form method="post" action="/r/${token}/simulate-pay"><button class="primary">Simulate deposit payment (local test)</button></form><p class="muted">Stripe is not configured in this local build yet.</p>`
@@ -345,6 +351,10 @@ async function router(req,res){
       action=`<div class="notice warn"><strong>Your appointment is being held pending the deposit.</strong></div>${pending?`<div class="card"><h2>Reserved appointment</h2><div class="slot"><span><strong>${esc(fmtDateTime(pending.start_at))}</strong><br><span class="muted">${durationText(pending.duration_minutes)}</span></span></div><h3>Deposit due: ${money(pending.deposit_due_cents)}</h3><p class="muted">This hold expires in <strong id="holdCountdown">calculating…</strong>.</p>${stripeButton}</div><script>(function(){const end=new Date('${esc(pending.reservation_expires_at||'')}').getTime();const el=document.getElementById('holdCountdown');function tick(){const ms=end-Date.now();if(ms<=0){el.textContent='expired';setTimeout(()=>location.reload(),1000);return;}const m=Math.floor(ms/60000),s=Math.floor((ms%60000)/1000);el.textContent=m+'m '+s+'s';setTimeout(tick,1000)}tick()})()</script>`:''}`;
     }
     if(r.status==='booked') action=`<div class="notice"><strong>Booked.</strong> Deposit status: ${(await totalsFor(r.id)).paid >= (r.deposit_cents||0) ? 'paid/recorded' : 'still due'}.</div>${appts.length?`<div class="card"><h2>Your sessions</h2>${appts.filter(a=>a.status!=='cancelled' && a.status!=='expired').map(a=>`<div class="slot"><span><strong>Session ${a.session_number}: ${esc(a.session_type)}</strong><br>${esc(fmtDateTime(a.start_at))} • ${durationText(a.duration_minutes)}${a.notes?`<br><span class="muted">${esc(a.notes)}</span>`:''}</span></div>`).join('')}</div>`:''}<div class="card"><h2>Need to change something?</h2><p class="muted">Send Beau a reschedule or cancellation request. This does not automatically cancel your appointment.</p><form method="post" action="/r/${token}/change-request"><div class="field"><label>Request</label><select name="kind"><option value="reschedule">Reschedule</option><option value="cancel">Cancel appointment</option></select></div><div class="field"><label>Reason / details</label><textarea name="reason" required></textarea></div><div class="field"><label>Preferred new days/times</label><input name="preferred_times" placeholder="Optional"></div><button>Send request</button></form></div>`;
+    if(r.status==='pending_deposit'){
+      if(u.searchParams.get('paid')==='1') action=`<div class="notice" role="status">Checking your payment confirmation. Your appointment is confirmed only when this page shows Booked. If you already paid, do not pay again; contact Beau if confirmation does not appear.</div>`+action;
+      action+=`<script>(function(){let attempts=0;async function check(){if(++attempts>60)return;try{const response=await fetch('/r/${token}/status',{cache:'no-store'});if(response.ok){const result=await response.json();if(result.status!=='pending_deposit'){location.reload();return;}}}catch{}setTimeout(check,5000);}setTimeout(check,3000);})()</script>`;
+    }
     if(r.status==='completed') action=`<div class="notice">This tattoo project is marked complete.</div>`;
     return send(res,200,layout('Tattoo Request Status',`<div class="top"><div><div class="brand">Beau Merrival Tattoo</div><h1>${esc(r.client_name)}'s tattoo project</h1><div class="muted">Status: ${esc(statusLabel(r.status))}</div></div><span class="pill">${esc(statusLabel(r.status))}</span></div><div class="card"><div class="grid3"><div class="stat"><div class="k">Placement</div><div class="v">${esc(r.placement)}</div></div><div class="stat"><div class="k">Size</div><div class="v">${esc(r.size)}</div></div><div class="stat"><div class="k">Style</div><div class="v">${esc(r.style)}</div></div></div><h3>Tattoo idea</h3><p>${esc(r.idea)}</p></div>${action}`));
   }
