@@ -53,9 +53,21 @@ test('v6 PostgreSQL migrations and HTTP workflow',async t=>{
     assert(!(await (await get(`/r/${token}`)).text()).includes('PRIVATE'));
     assert.equal((await post(`/r/${token}/book`,{slot_id:slot.id})).status,400);
   });
+  await t.test('payment return checks persisted status and cannot confirm a booking',async()=>{
+    const response=await get(`/r/${token}?paid=1`);
+    const page=await response.text();
+    assert(page.includes('Checking your payment confirmation'));
+    assert(page.includes(`/r/${token}/status`));
+    const status=await get(`/r/${token}/status`);
+    assert.equal(status.headers.get('cache-control'),'no-store');
+    assert.deepEqual(await status.json(),{status:'pending_deposit'});
+    assert.equal((await repo.payments(id)).length,0);
+    assert.equal((await get(`/r/${'a'.repeat(48)}/status`)).status,404);
+  });
   await t.test('deposit confirms once and queues confirmation/reminders',async()=>{
     assert.equal((await post(`/r/${token}/simulate-pay`,{})).status,302);
     assert.equal((await repo.request(id)).status,'booked');
+    assert.deepEqual(await (await get(`/r/${token}/status`)).json(),{status:'booked'});
     assert.equal((await repo.totals(id)).paid,10000);
     await repo.deposit(id,appointment.id,`simulation-${appointment.id}`,10000,'simulated_deposit');
     assert.equal((await repo.payments(id)).length,1);
