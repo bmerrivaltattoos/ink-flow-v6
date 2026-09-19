@@ -109,6 +109,44 @@ function consentRequiredFieldsOk(f){
 
 
 async function expireReservations(){return repo.expire();}
+// Best-effort closure of stale provider links. The transactional deposit guard
+// remains authoritative even if Stripe is unavailable or a payment races expiry.
+const closedCheckouts=new Set();
+let checkoutCleanupRunning=false;
+async function expireReleasedCheckouts(){
+  if(checkoutCleanupRunning||!repo.configured||!STRIPE_SECRET_KEY)return;
+  checkoutCleanupRunning=true;
+  const result={expired:0,closed:0,failed:0};
+  try{
+    await expireReservations();
+    const released=await repo.list('ink_appointments',{status:'in.(expired,cancelled)'});
+    for(const a of released){
+      const id=a.stripe_session_id;
+      if(!id||closedCheckouts.has(id))continue;
+      try{
+        const endpoint=`https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(id)}`;
+        const options={headers:{Authorization:`Bearer ${STRIPE_SECRET_KEY}`},signal:AbortSignal.timeout(10000)};
+        const response=await fetch(endpoint,options);
+        if(!response.ok)throw new Error('Checkout lookup failed');
+        let session=await response.json();
+        if(session.id!==id)throw new Error('Checkout mismatch');
+        if(session.status==='open'){
+          const expired=await fetch(endpoint+'/expire',{method:'POST',headers:options.headers,signal:AbortSignal.timeout(10000)});
+          if(!expired.ok)throw new Error('Checkout expiration failed');
+          session=await expired.json();
+          if(session.id!==id||session.status!=='expired')throw new Error('Checkout still open');
+          result.expired++;
+        }
+        if(!['complete','expired'].includes(session.status))throw new Error('Unknown checkout status');
+        closedCheckouts.add(id);
+        if(closedCheckouts.size>1000)closedCheckouts.delete(closedCheckouts.values().next().value);
+        result.closed++;
+      }catch{result.failed++;}
+    }
+    if(result.failed)console.error('Released checkout cleanup will retry:',result.failed);
+    return result;
+  }finally{checkoutCleanupRunning=false;}
+}
 async function queueNotification(data){return repo.queue(data);}
 
 function appointmentReminderText(r,a,label){
@@ -616,5 +654,7 @@ server.listen(PORT,HOST,()=>{
 });
 setInterval(()=>{processNotificationOutbox().catch(()=>console.error('Background processing failed.'))},60000).unref();
 processNotificationOutbox().catch(()=>console.error('Background processing failed.'));
+setInterval(()=>{expireReleasedCheckouts().catch(()=>console.error('Checkout cleanup failed; will retry.'))},60000).unref();
+expireReleasedCheckouts().catch(()=>console.error('Checkout cleanup failed; will retry.'));
 }
-module.exports={server,router,repo,storage,processNotificationOutbox,verifyStripeWebhook};
+module.exports={server,router,repo,storage,processNotificationOutbox,verifyStripeWebhook,expireReleasedCheckouts};
